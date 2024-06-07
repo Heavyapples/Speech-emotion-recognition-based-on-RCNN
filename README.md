@@ -1,5 +1,9 @@
 # 基于随机森林的语音情感识别
 
+### 原数据集enterface database下载
+链接：[https://pan.baidu.com/s/1AXb31ov3kJhg5_Bo4C-ElA?pwd=5kxk](https://pan.baidu.com/s/1AXb31ov3kJhg5_Bo4C-ElA?pwd=5kxk)  
+提取码：5kxk
+
 ## 系统要求
 建议使用 python3 或以上版本。
 
