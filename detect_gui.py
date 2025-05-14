@@ -1,177 +1,200 @@
-import tkinter as tk
-from tkinter import filedialog
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import sys
 import os
 import numpy as np
 import scipy.io.wavfile as wavfile
 import librosa
 from python_speech_features import mfcc
 from scipy.signal.windows import hamming
+from keras.models import load_model
+from PyQt5 import QtCore, QtWidgets
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
-from keras.models import load_model as keras_load_model
-from tkinter import messagebox
 
-# 使用黑体字体
-font = FontProperties(fname=r"C:\Windows\Fonts\simhei.ttf", size=14)
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置全局字体
-plt.rcParams['axes.unicode_minus'] = False  # 解决保存图像时负号'-'显示为方块的问题
+# 设置中文字体
+font = FontProperties(fname=r"C:\Windows\Fonts\simhei.ttf", size=10)
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
 
-def load_saved_model(model_path):
-    global model
-    model = keras_load_model(model_path)
+class EmotionApp(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.model = None
+        self.wav_file = None
+        self.extracted_features = None
 
-def load_wav_file():
-    global wav_file
-    wav_file = filedialog.askopenfilename(filetypes=[('WAV files', '*.wav')])
-    rate, data = wavfile.read(wav_file)
-    plot_waveform(rate, data)
+        self.init_ui()
 
-def plot_waveform(rate, data):
-    fig, ax = plt.subplots()
-    ax.plot(data)
-    ax.set_title('待测语音原始波形')
-    ax.set_xlabel('时间')
-    ax.set_ylabel('振幅')
-    waveform_plot = FigureCanvasTkAgg(fig, window)
-    waveform_plot.get_tk_widget().grid(row=2, column=0)
+    def init_ui(self):
+        self.setWindowTitle('语音情感识别')
+        self.resize(800, 600)
 
-def extract_features():
-    global wav_file, extracted_features
-    rate, data = wavfile.read(wav_file)
-    extracted_features = extract_features_from_audio(data, rate)
+        # Buttons
+        self.btn_load_model = QtWidgets.QPushButton('加载模型')
+        self.btn_load_wav = QtWidgets.QPushButton('加载WAV文件')
+        self.btn_extract = QtWidgets.QPushButton('提取特征')
+        self.btn_plot = QtWidgets.QPushButton('显示特征')
+        self.btn_detect = QtWidgets.QPushButton('检测情感')
 
-def extract_features_from_audio(audio_data, audio_fs):
-    # 预处理参数
-    target_sample_rate = 16000  # 重采样目标采样率（Hz）
-    frame_length = 0.025  # 帧长度（s）
-    frame_overlap = 0.01  # 帧重叠（s）
+        # Canvas for waveform
+        self.figure = plt.figure()
+        self.canvas = FigureCanvas(self.figure)
 
-    # 重采样
-    if audio_fs != target_sample_rate:
-        audio_data = librosa.resample(audio_data.astype(np.float32), orig_sr=audio_fs,
-                                      target_sr=target_sample_rate)
-        audio_fs = target_sample_rate
+        # Layouts
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addWidget(self.btn_load_model)
+        btn_layout.addWidget(self.btn_load_wav)
+        btn_layout.addWidget(self.btn_extract)
+        btn_layout.addWidget(self.btn_plot)
+        btn_layout.addWidget(self.btn_detect)
 
-    # 转换为单声道
-    if audio_data.ndim > 1:
-        audio_data = np.mean(audio_data, axis=1)
+        main_layout = QtWidgets.QVBoxLayout()
+        main_layout.addLayout(btn_layout)
+        main_layout.addWidget(self.canvas)
+        self.setLayout(main_layout)
 
-    # 提取音色特征 (MFCC)
-    mfccs = mfcc(audio_data, audio_fs)
+        # Connections
+        self.btn_load_model.clicked.connect(self.load_model)
+        self.btn_load_wav.clicked.connect(self.load_wav)
+        self.btn_extract.clicked.connect(self.extract_features)
+        self.btn_plot.clicked.connect(self.plot_features)
+        self.btn_detect.clicked.connect(self.detect_emotion)
 
-    # 提取音高特征
-    pitch_values = librosa.yin(audio_data, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-    pitch_values = np.mean(pitch_values) * np.ones((mfccs.shape[0], 1))
+    def load_model(self):
+        path, _ = QFileDialog.getOpenFileName(self, '选择模型文件', filter='HDF5 files (*.h5)')
+        if path:
+            self.model = load_model(path)
 
-    # 计算音强特征
-    frame_length_samples = int(round(frame_length * audio_fs))
-    frame_overlap_samples = int(round(frame_overlap * audio_fs))
-    rms_window = hamming(frame_length_samples, sym=False)
-    frame_starts = np.arange(0, len(audio_data) - frame_length_samples + 1, frame_overlap_samples)
-    rms_values = np.zeros((len(frame_starts), 1))
-    for i in range(len(frame_starts)):
-        frame = audio_data[frame_starts[i]:frame_starts[i] + frame_length_samples]
-        rms_values[i] = np.sqrt(np.mean(frame ** 2))
-    rms_values = rms_values[:mfccs.shape[0], :]
+    def load_wav(self):
+        path, _ = QFileDialog.getOpenFileName(self, '选择WAV文件', filter='WAV files (*.wav)')
+        if path:
+            self.wav_file = path
+            rate, data = wavfile.read(self.wav_file)
+            self.plot_waveform(rate, data)
 
-    # 将所有特征裁剪为相同的长度
-    min_len = min(mfccs.shape[0], rms_values.shape[0], pitch_values.shape[0])
-    mfccs = mfccs[:min_len, :]
-    rms_values = rms_values[:min_len, :]
-    pitch_values = pitch_values[:min_len, :]
+    def plot_waveform(self, rate, data):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.plot(data)
+        ax.set_title('待测语音原始波形', fontproperties=font)
+        ax.set_xlabel('时间', fontproperties=font)
+        ax.set_ylabel('振幅', fontproperties=font)
+        self.canvas.draw()
 
-    # 提取持续时间特征
-    duration_value = len(audio_data) / audio_fs
+    def extract_features(self):
+        if not self.wav_file:
+            return
+        rate, data = wavfile.read(self.wav_file)
+        self.extracted_features = self._extract_from_audio(data, rate)
 
-    # 将特征堆叠在一起
-    stacked_features = np.hstack((pitch_values, mfccs, rms_values, np.full((mfccs.shape[0], 1), duration_value)))
+    def _extract_from_audio(self, audio_data, audio_fs):
+        target_sr = 16000
+        frame_length = 0.025
+        frame_overlap = 0.01
 
-    return stacked_features
+        if audio_fs != target_sr:
+            audio_data = librosa.resample(audio_data.astype(np.float32), orig_sr=audio_fs, target_sr=target_sr)
+            audio_fs = target_sr
+        if audio_data.ndim > 1:
+            audio_data = np.mean(audio_data, axis=1)
 
-def plot_features():
-    global extracted_features
+        mfccs = mfcc(audio_data, audio_fs)
+        pitch = librosa.yin(audio_data, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        pitch = np.mean(pitch) * np.ones((mfccs.shape[0], 1))
 
-    # 获取各种特征的长度
-    pitch_length = len(extracted_features[:, 0])
-    mfcc_length = extracted_features.shape[1] - 2 - 1
-    rms_length = len(extracted_features[:, -2])
-    duration_length = len(extracted_features[:, -1])
+        fls = int(round(frame_length * audio_fs))
+        fos = int(round(frame_overlap * audio_fs))
+        starts = np.arange(0, len(audio_data) - fls + 1, fos)
+        rms = np.array([np.sqrt(np.mean(audio_data[s:s+fls]**2)) for s in starts])
+        rms = rms[:mfccs.shape[0]].reshape(-1,1)
 
-    # 创建一个带有4个子图的画布
-    fig, axes = plt.subplots(4, 1, figsize=(12, 16))
+        min_len = min(mfccs.shape[0], rms.shape[0], pitch.shape[0])
+        mfccs = mfccs[:min_len]
+        rms = rms[:min_len]
+        pitch = pitch[:min_len]
 
-    # 绘制音高特征
-    axes[0].plot(np.arange(pitch_length), extracted_features[:, 0], color='blue', label='Pitch')
-    axes[0].set_title('音高特征')
-    axes[0].set_xlabel('时间')
-    axes[0].set_ylabel('频率')
-    axes[0].legend()
+        duration = len(audio_data) / audio_fs
+        dur_arr = np.full((min_len,1), duration)
 
-    # 绘制音色特征 (MFCC)
-    img = axes[1].imshow(extracted_features[:, 1:1+mfcc_length].T, origin='lower', aspect='auto', cmap='viridis')
-    axes[1].set_title('音色特征')
-    axes[1].set_xlabel('时间')
-    axes[1].set_ylabel('MFCC系数')
-    fig.colorbar(img, ax=axes[1], label='MFCC Value')
+        return np.hstack((pitch, mfccs, rms, dur_arr))
 
-    # 绘制音强特征
-    axes[2].plot(np.arange(rms_length), extracted_features[:, -2], color='green', label='RMS')
-    axes[2].set_title('音强特征')
-    axes[2].set_xlabel('时间')
-    axes[2].set_ylabel('均方根振幅')
-    axes[2].legend()
+    def plot_features(self):
+        if self.extracted_features is None:
+            return
+        # 弹出新窗口展示特征
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('特征展示')
+        dlg.resize(900, 700)
 
-    # 绘制持续时间特征
-    axes[3].bar(np.arange(duration_length), extracted_features[:, -1], color='red', label='Duration')
-    axes[3].set_title('持续时间特征')
-    axes[3].set_xlabel('时间')
-    axes[3].set_ylabel('持续时间')
-    axes[3].legend()
+        # 创建带更大尺寸的 Figure
+        fig = plt.figure(figsize=(9, 7))
+        # 调整子图间距
+        fig.subplots_adjust(hspace=0.5)
+        canvas = FigureCanvas(fig)
 
-    # 调整布局并显示图像
-    plt.tight_layout()
-    plt.show()
+        feat = self.extracted_features
+        gs = fig.add_gridspec(4, 1)
 
-def detect_emotion():
-    global model, extracted_features
+        # 音高
+        ax0 = fig.add_subplot(gs[0, 0])
+        ax0.plot(feat[:, 0])
+        ax0.set_title('音高特征', fontproperties=font)
+        ax0.set_ylabel('频率(Hz)', fontproperties=font)
 
-    # 预处理特征以匹配模型输入
-    input_features = np.expand_dims(extracted_features, axis=0)  # 增加批次维度
+        # MFCC
+        ax1 = fig.add_subplot(gs[1, 0])
+        img = ax1.imshow(feat[:, 1:-2].T, origin='lower', aspect='auto')
+        ax1.set_title('音色特征 (MFCC)', fontproperties=font)
+        ax1.set_ylabel('系数', fontproperties=font)
+        fig.colorbar(img, ax=ax1, fraction=0.02, pad=0.04)
 
-    # 调整输入特征的形状
-    n_features = extracted_features.shape[1]
-    input_features = input_features.reshape(-1, n_features, 1)
+        # RMS
+        ax2 = fig.add_subplot(gs[2, 0])
+        ax2.plot(feat[:, -2])
+        ax2.set_title('音强特征 (RMS)', fontproperties=font)
+        ax2.set_ylabel('幅度', fontproperties=font)
 
-    # 预测情感类别概率
-    emotion_probabilities = model.predict(input_features)[0]
+        # 持续时间
+        ax3 = fig.add_subplot(gs[3, 0])
+        ax3.bar(np.arange(len(feat[:, -1])), feat[:, -1])
+        ax3.set_title('持续时间特征', fontproperties=font)
+        ax3.set_ylabel('时长(s)', fontproperties=font)
 
-    # 获取最大概率对应的情感标签
-    emotions = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise']
-    predicted_emotion = emotions[np.argmax(emotion_probabilities)]
+        btn_save = QtWidgets.QPushButton('下载图片')
+        btn_save.clicked.connect(lambda: self.save_figure(fig))
 
-    # 显示预测结果
-    tk.messagebox.showinfo('预测结果', f'预测情感: {predicted_emotion}\n各类别概率: {emotion_probabilities}')
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(canvas)
+        layout.addWidget(btn_save)
+        dlg.setLayout(layout)
 
-# 创建主窗口
-window = tk.Tk()
-window.title('语音情感识别')
+        canvas.draw()
+        dlg.exec_()
 
-# 创建并放置按钮
-load_model_button = tk.Button(window, text='加载模型', command=lambda: load_saved_model(filedialog.askopenfilename(filetypes=[('HDF5 files', '*.h5')])))
-load_model_button.grid(row=0, column=0)
+    def save_figure(self, fig):
+        path, _ = QFileDialog.getSaveFileName(self, '保存图片', filter='PNG files (*.png)')
+        if path:
+            fig.savefig(path)
 
-load_wav_button = tk.Button(window, text='加载WAV文件', command=load_wav_file)
-load_wav_button.grid(row=1, column=0)
+    def detect_emotion(self):
+        if self.model is None or self.extracted_features is None:
+            return
+        inp = self.extracted_features[np.newaxis, ...]
+        inp = inp.reshape(-1, inp.shape[2], 1)
+        probs = self.model.predict(inp)[0]
+        labels = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise']
+        idx = np.argmax(probs)
+        text = f"预测情感: {labels[idx]}\n"
+        text += '\n'.join([f"{l}: {p*100:.2f}%" for l, p in zip(labels, probs)])
 
-extract_features_button = tk.Button(window, text='提取特征', command=extract_features)
-extract_features_button.grid(row=3, column=0)
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle('预测结果')
+        dlg.setText(text)
+        dlg.exec_()
 
-plot_features_button = tk.Button(window, text='显示特征', command=plot_features)
-plot_features_button.grid(row=4, column=0)
-
-detect_emotion_button = tk.Button(window, text='检测情感', command=detect_emotion)
-detect_emotion_button.grid(row=5, column=0)
-
-# 运行主循环
-window.mainloop()
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    win = EmotionApp()
+    win.show()
+    sys.exit(app.exec_())
